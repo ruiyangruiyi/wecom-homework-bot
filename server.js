@@ -51,15 +51,15 @@ function clearUserSession(userId) {
 
 // 主菜单配置
 const MAIN_MENU = [
-  { id: 1, name: '群二维码', trigger: 'qrcode' },
-  { id: 2, name: '建群', trigger: 'creategroup' },
-  { id: 3, name: '状态', trigger: 'status' },
+  { id: 1, name: '群二维码', desc: '获取外部群入群码', trigger: 'qrcode' },
+  { id: 2, name: '系统状态', desc: '查看运行状态', trigger: 'status' },
+  { id: 3, name: '建内部群', desc: '仅限企业成员', trigger: 'creategroup' },
 ];
 
 // 生成主菜单文本
 function getMainMenuText() {
   const list = MAIN_MENU.map(item => `${item.id}. ${item.name}`).join('\n');
-  return `📌 功能菜单：\n${list}\n\n回复数字选择功能`;
+  return `📌 功能菜单：\n${list}\n\n回复数字选择`;
 }
 
 // 处理菜单选择
@@ -81,7 +81,7 @@ async function handleMenuSelection(content, fromUser) {
     case 'qrcode':
       return { type: 'redirect', command: 'qr' };
     case 'creategroup':
-      return { type: 'text', content: '建群指令格式：\n建群 群名称 成员1,成员2\n\n例如：建群 测试群 zhangsan,lisi' };
+      return { type: 'text', content: '📝 建内部群（仅限企业成员）\n\n格式：建群 群名 成员1,成员2\n例如：建群 测试群 zhangsan,lisi' };
     case 'status':
       return { type: 'text', content: `✅ 系统运行正常\n⏰ ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}` };
     default:
