@@ -52,8 +52,9 @@ function clearUserSession(userId) {
 // 主菜单配置
 const MAIN_MENU = [
   { id: 1, name: '群二维码', desc: '获取外部群入群码', trigger: 'qrcode' },
-  { id: 2, name: '系统状态', desc: '查看运行状态', trigger: 'status' },
-  { id: 3, name: '建内部群', desc: '仅限企业成员', trigger: 'creategroup' },
+  { id: 2, name: '发作业', desc: '发布作业到群', trigger: 'homework' },
+  { id: 3, name: '系统状态', desc: '查看运行状态', trigger: 'status' },
+  { id: 4, name: '建内部群', desc: '仅限企业成员', trigger: 'creategroup' },
 ];
 
 // 生成主菜单文本
@@ -80,6 +81,10 @@ async function handleMenuSelection(content, fromUser) {
   switch (selected.trigger) {
     case 'qrcode':
       return { type: 'redirect', command: 'qr' };
+    case 'homework':
+      // 进入发作业流程
+      setUserSession(fromUser, { type: 'homework_select_group' });
+      return { type: 'redirect', command: 'homework_start' };
     case 'creategroup':
       return { type: 'text', content: '📝 建内部群（仅限企业成员）\n\n格式：建群 群名 成员1,成员2\n例如：建群 测试群 zhangsan,lisi' };
     case 'status':
@@ -296,6 +301,78 @@ function isQrcodeCommand(text) {
   // 支持：群二维码、二维码、qr、/qr
   return /^(群二维码|二维码|\/qr|qr)(\s|$)/i.test(t);
 }
+
+// ========== 发作业功能 ==========
+
+// 处理发作业流程
+async function handleHomeworkStart(fromUser) {
+  // 获取群列表供选择
+  const result = await getCustomerGroups();
+  if (!result.success) {
+    return { type: 'text', content: `❌ 获取群列表失败: ${result.error}` };
+  }
+  
+  if (result.groups.length === 0) {
+    return { type: 'text', content: '暂无外部群，请先创建群' };
+  }
+  
+  const list = result.groups.map((g, i) => `${i + 1}. ${g.name}`).join('\n');
+  setUserSession(fromUser, { type: 'homework_select_group', groups: result.groups });
+  return { type: 'text', content: `📚 发作业 - 选择目标群：\n${list}\n\n回复序号选择` };
+}
+
+// 处理群选择
+async function handleHomeworkGroupSelection(content, fromUser) {
+  const session = getUserSession(fromUser);
+  if (!session || session.type !== 'homework_select_group') {
+    return null;
+  }
+  
+  const num = parseInt(content.trim());
+  if (isNaN(num) || num < 1 || num > session.groups.length) {
+    return null;
+  }
+  
+  const group = session.groups[num - 1];
+  setUserSession(fromUser, { type: 'homework_input', group });
+  return { type: 'text', content: `已选择「${group.name}」\n\n请输入作业内容：\n（支持多行，发送后自动同步到群）` };
+}
+
+// 处理作业内容输入
+async function handleHomeworkInput(content, fromUser) {
+  const session = getUserSession(fromUser);
+  if (!session || session.type !== 'homework_input') {
+    return null;
+  }
+  
+  const group = session.group;
+  clearUserSession(fromUser);
+  
+  // 检测作业格式
+  const homework = detectHomework(content);
+  const homeworkContent = homework ? homework.content : content;
+  
+  // 保存到 Redis
+  const homeworkId = await saveHomework(
+    { raw: content, content: homeworkContent, pattern: homework?.pattern || 'direct' },
+    group.chatId,
+    fromUser
+  );
+  
+  // 同步到 Telegram
+  const telegramMsg = `📚 <b>作业已发布</b>\n\n👤 发布者: <code>${fromUser}</code>\n🏠 群: ${group.name}\n📝 内容:\n${homeworkContent.substring(0, 500)}\n⏰ 时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`;
+  await sendToTelegram(telegramMsg);
+  
+  // TODO: 发送到客户群（需要群机器人 Webhook 或 appchat/send 权限）
+  // 目前先返回成功，后续接入群消息发送
+  
+  return { 
+    type: 'text', 
+    content: `✅ 作业已保存！\n\n📋 作业ID: ${homeworkId}\n🏠 目标群: ${group.name}\n\n⚠️ 注意：自动发送到群功能开发中，请手动复制到群里` 
+  };
+}
+
+// ========== 二维码功能 ==========
 
 // 提取群名参数
 function extractGroupName(text) {
@@ -526,12 +603,17 @@ app.post('/api/wecom/callback', async (req, res) => {
         if (menuReply) {
           if (menuReply.type === 'redirect') {
             // 重定向到其他命令
-            const qrReply = await handleQrcodeCommand(menuReply.command, fromUser);
-            if (qrReply.type === 'image') {
-              await sendWeComMessage(fromUser, `📱 「${qrReply.groupName}」入群二维码：`);
-              await sendWeComImage(fromUser, qrReply.mediaId);
+            if (menuReply.command === 'homework_start') {
+              const hwReply = await handleHomeworkStart(fromUser);
+              await sendWeComMessage(fromUser, hwReply.content);
             } else {
-              await sendWeComMessage(fromUser, qrReply.content);
+              const qrReply = await handleQrcodeCommand(menuReply.command, fromUser);
+              if (qrReply.type === 'image') {
+                await sendWeComMessage(fromUser, `📱 「${qrReply.groupName}」入群二维码：`);
+                await sendWeComImage(fromUser, qrReply.mediaId);
+              } else {
+                await sendWeComMessage(fromUser, qrReply.content);
+              }
             }
           } else {
             await sendWeComMessage(fromUser, menuReply.content);
@@ -548,6 +630,20 @@ app.post('/api/wecom/callback', async (req, res) => {
           } else {
             await sendWeComMessage(fromUser, selectionReply.content);
           }
+          return res.send('success');
+        }
+
+        // 检查是否是发作业流程中的群选择
+        const homeworkGroupReply = await handleHomeworkGroupSelection(content, fromUser);
+        if (homeworkGroupReply) {
+          await sendWeComMessage(fromUser, homeworkGroupReply.content);
+          return res.send('success');
+        }
+
+        // 检查是否是发作业流程中的内容输入
+        const homeworkInputReply = await handleHomeworkInput(content, fromUser);
+        if (homeworkInputReply) {
+          await sendWeComMessage(fromUser, homeworkInputReply.content);
           return res.send('success');
         }
 
