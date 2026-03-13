@@ -250,15 +250,22 @@ async function sendWeComImage(toUser, mediaId) {
 }
 
 // 处理群二维码指令
+// 检查是否是二维码指令（支持多种触发词）
+function isQrcodeCommand(text) {
+  const t = text.trim().toLowerCase();
+  // 支持：群二维码、二维码、qr、QR
+  return /^(群二维码|二维码|qr)(\s|$)/i.test(t);
+}
+
+// 提取群名参数
+function extractGroupName(text) {
+  const t = text.trim();
+  const match = t.match(/^(群二维码|二维码|qr)\s+(.+)$/i);
+  return match ? match[2].trim() : null;
+}
+
 async function handleQrcodeCommand(content, fromUser) {
-  const text = content.trim();
-  const match = text.match(/^群二维码(?:\s+(.+))?$/);
-  
-  if (!match) {
-    return { type: 'text', content: '指令格式：\n• 群二维码 - 查看所有外部群\n• 群二维码 群名 - 获取指定群的二维码' };
-  }
-  
-  const groupName = match[1]?.trim();
+  const groupName = extractGroupName(content);
   
   // 获取群列表
   const result = await getCustomerGroups();
@@ -272,10 +279,10 @@ async function handleQrcodeCommand(content, fromUser) {
   
   // 如果没指定群名，返回群列表并保存会话
   if (!groupName) {
-    const list = result.groups.map((g, i) => `${i + 1}. ${g.name} (${g.memberCount}人)`).join('\n');
+    const list = result.groups.map((g, i) => `${i + 1}. ${g.name}`).join('\n');
     // 保存群列表到用户会话
     setUserSession(fromUser, { type: 'qrcode_select', groups: result.groups });
-    return { type: 'text', content: `📋 外部群列表：\n\n${list}\n\n👆 回复序号获取二维码（5分钟内有效）` };
+    return { type: 'text', content: `📋 外部群：\n${list}\n\n回复序号获取二维码` };
   }
   
   // 查找匹配的群
@@ -381,11 +388,10 @@ const AUTO_REPLIES = {
   '你好': '您好，我是教学管理助手，有什么可以帮您的？',
   'hello': '您好，我是教学管理助手，有什么可以帮您的？',
   'hi': '您好，我是教学管理助手，有什么可以帮您的？',
-  '帮助': '👋 您好！我是教学管理助手。\n\n📌 可用命令：\n• 你好 - 打招呼\n• 帮助 - 查看帮助\n• 建群 - 创建班级群\n• 群二维码 - 获取外部群二维码\n• 状态 - 查看系统状态',
-  'help': '👋 您好！我是教学管理助手。\n\n📌 可用命令：\n• 你好 - 打招呼\n• 帮助 - 查看帮助\n• 建群 - 创建班级群\n• 群二维码 - 获取外部群二维码\n• 状态 - 查看系统状态',
-  '?': '👋 您好！我是教学管理助手。\n\n📌 可用命令：\n• 你好 - 打招呼\n• 帮助 - 查看帮助\n• 建群 - 创建班级群\n• 群二维码 - 获取外部群二维码\n• 状态 - 查看系统状态',
+  '帮助': '👋 您好！我是教学管理助手。\n\n📌 可用命令：\n• 二维码/qr - 获取外部群二维码\n• 建群 - 创建班级群\n• 状态 - 查看系统状态',
+  'help': '👋 您好！我是教学管理助手。\n\n📌 可用命令：\n• 二维码/qr - 获取外部群二维码\n• 建群 - 创建班级群\n• 状态 - 查看系统状态',
+  '?': '👋 您好！我是教学管理助手。\n\n📌 可用命令：\n• 二维码/qr - 获取外部群二维码\n• 建群 - 创建班级群\n• 状态 - 查看系统状态',
   '建群': null,  // 特殊处理
-  '群二维码': null,  // 特殊处理
   '状态': null,
 };
 
@@ -487,8 +493,8 @@ app.post('/api/wecom/callback', async (req, res) => {
           return res.send('success');
         }
 
-        // 特殊处理群二维码指令
-        if (content.trim().startsWith('群二维码')) {
+        // 特殊处理群二维码指令（支持：群二维码、二维码、qr）
+        if (isQrcodeCommand(content)) {
           const qrReply = await handleQrcodeCommand(content, fromUser);
           if (qrReply.type === 'image') {
             await sendWeComMessage(fromUser, `📱 「${qrReply.groupName}」入群二维码：`);
