@@ -27,6 +27,28 @@ if (!hasConfig) {
   console.warn('⚠️ 企业微信配置不完整，请检查 .env 文件');
 }
 
+// 用户会话状态（存储群列表选择上下文）
+const userSessions = new Map();
+const SESSION_TIMEOUT = 5 * 60 * 1000; // 5分钟超时
+
+function setUserSession(userId, data) {
+  userSessions.set(userId, { ...data, timestamp: Date.now() });
+}
+
+function getUserSession(userId) {
+  const session = userSessions.get(userId);
+  if (!session) return null;
+  if (Date.now() - session.timestamp > SESSION_TIMEOUT) {
+    userSessions.delete(userId);
+    return null;
+  }
+  return session;
+}
+
+function clearUserSession(userId) {
+  userSessions.delete(userId);
+}
+
 async function sendToTelegram(message) {
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return null;
   try {
@@ -152,32 +174,34 @@ async function getCustomerGroups() {
 async function getGroupQrcode(chatId) {
   try {
     const token = await getAccessToken();
-    const url = `https://qyapi.weixin.qq.com/cgi-bin/externalcontact/groupchat/get_join_way?access_token=${token}`;
-    // 先尝试获取已有的入群方式
-    const listUrl = `https://qyapi.weixin.qq.com/cgi-bin/externalcontact/groupchat/list_join_way?access_token=${token}`;
-    const listRes = await axios.post(listUrl, { chat_id: chatId, limit: 10 });
+    console.log('[群二维码] chatId:', chatId);
     
-    if (listRes.data.errcode === 0 && listRes.data.join_way_list?.length > 0) {
-      // 已有入群方式，获取二维码
-      const configId = listRes.data.join_way_list[0].config_id;
-      const getUrl = `https://qyapi.weixin.qq.com/cgi-bin/externalcontact/groupchat/get_join_way?access_token=${token}`;
-      const getRes = await axios.post(getUrl, { config_id: configId });
-      if (getRes.data.errcode === 0) {
-        return { success: true, qrcodeUrl: getRes.data.join_way.qr_code };
-      }
-    }
-    
-    // 没有入群方式，创建一个
+    // 创建入群方式
     const addUrl = `https://qyapi.weixin.qq.com/cgi-bin/externalcontact/groupchat/add_join_way?access_token=${token}`;
-    const addRes = await axios.post(addUrl, {
+    const addPayload = {
       scene: 2,
       chat_id_list: [chatId],
       auto_create_room: 0
-    });
-    if (addRes.data.errcode === 0) {
-      return { success: true, qrcodeUrl: addRes.data.qr_code };
+    };
+    console.log('[群二维码] 创建入群方式请求:', JSON.stringify(addPayload));
+    const addRes = await axios.post(addUrl, addPayload);
+    console.log('[群二维码] 创建入群方式响应:', JSON.stringify(addRes.data));
+    
+    if (addRes.data.errcode !== 0) {
+      return { success: false, error: addRes.data.errmsg, errcode: addRes.data.errcode };
     }
-    return { success: false, error: addRes.data.errmsg };
+    
+    // 获取二维码
+    const configId = addRes.data.config_id;
+    const getUrl = `https://qyapi.weixin.qq.com/cgi-bin/externalcontact/groupchat/get_join_way?access_token=${token}`;
+    console.log('[群二维码] 获取二维码请求 config_id:', configId);
+    const getRes = await axios.post(getUrl, { config_id: configId });
+    console.log('[群二维码] 获取二维码响应:', JSON.stringify(getRes.data));
+    
+    if (getRes.data.errcode === 0 && getRes.data.join_way?.qr_code) {
+      return { success: true, qrcodeUrl: getRes.data.join_way.qr_code };
+    }
+    return { success: false, error: getRes.data.errmsg || '获取二维码失败' };
   } catch (error) {
     console.error('[群二维码] 异常:', error.message);
     return { success: false, error: error.message };
@@ -246,10 +270,12 @@ async function handleQrcodeCommand(content, fromUser) {
     return { type: 'text', content: '暂无外部群' };
   }
   
-  // 如果没指定群名，返回群列表
+  // 如果没指定群名，返回群列表并保存会话
   if (!groupName) {
     const list = result.groups.map((g, i) => `${i + 1}. ${g.name} (${g.memberCount}人)`).join('\n');
-    return { type: 'text', content: `📋 外部群列表：\n\n${list}\n\n发送「群二维码 群名」获取入群二维码` };
+    // 保存群列表到用户会话
+    setUserSession(fromUser, { type: 'qrcode_select', groups: result.groups });
+    return { type: 'text', content: `📋 外部群列表：\n\n${list}\n\n👆 回复序号获取二维码（5分钟内有效）` };
   }
   
   // 查找匹配的群
@@ -258,7 +284,28 @@ async function handleQrcodeCommand(content, fromUser) {
     return { type: 'text', content: `❌ 未找到包含「${groupName}」的群` };
   }
   
-  // 获取二维码
+  return await getQrcodeForGroup(group);
+}
+
+// 处理序号选择
+async function handleQrcodeSelection(content, fromUser) {
+  const session = getUserSession(fromUser);
+  if (!session || session.type !== 'qrcode_select') {
+    return null; // 没有待选择的会话
+  }
+  
+  const num = parseInt(content.trim());
+  if (isNaN(num) || num < 1 || num > session.groups.length) {
+    return null; // 不是有效序号
+  }
+  
+  const group = session.groups[num - 1];
+  clearUserSession(fromUser); // 清除会话
+  return await getQrcodeForGroup(group);
+}
+
+// 获取指定群的二维码
+async function getQrcodeForGroup(group) {
   const qrResult = await getGroupQrcode(group.chatId);
   if (!qrResult.success) {
     return { type: 'text', content: `❌ 获取二维码失败: ${qrResult.error}` };
@@ -425,6 +472,18 @@ app.post('/api/wecom/callback', async (req, res) => {
         if (content.trim().startsWith('建群')) {
           const createGroupReply = await handleCreateGroupCommand(content, fromUser);
           await sendWeComMessage(fromUser, createGroupReply);
+          return res.send('success');
+        }
+
+        // 检查是否是序号选择（群二维码）
+        const selectionReply = await handleQrcodeSelection(content, fromUser);
+        if (selectionReply) {
+          if (selectionReply.type === 'image') {
+            await sendWeComMessage(fromUser, `📱 「${selectionReply.groupName}」入群二维码：`);
+            await sendWeComImage(fromUser, selectionReply.mediaId);
+          } else {
+            await sendWeComMessage(fromUser, selectionReply.content);
+          }
           return res.send('success');
         }
 
