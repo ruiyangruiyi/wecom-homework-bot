@@ -471,6 +471,35 @@ app.post('/api/wecom/send', async (req, res) => {
   }
 });
 
+// HTTP API: 获取外部群列表
+app.get('/api/customer-groups', async (req, res) => {
+  try {
+    const result = await getCustomerGroups();
+    if (result.success) {
+      res.json({ code: 0, data: result.groups });
+    } else {
+      res.json({ code: -1, message: result.error });
+    }
+  } catch (error) {
+    res.status(500).json({ code: -1, message: error.message });
+  }
+});
+
+// HTTP API: 获取指定群的二维码
+app.get('/api/customer-groups/:chatId/qrcode', async (req, res) => {
+  try {
+    const { chatId } = req.params;
+    const result = await getGroupQrcode(chatId);
+    if (result.success) {
+      res.json({ code: 0, data: { qrcodeUrl: result.qrcodeUrl } });
+    } else {
+      res.json({ code: -1, message: result.error });
+    }
+  } catch (error) {
+    res.status(500).json({ code: -1, message: error.message });
+  }
+});
+
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
@@ -480,7 +509,7 @@ app.get('/health', (req, res) => {
     hasToken: !!TOKEN,
     hasAesKey: !!ENCODING_AES_KEY,
     hasCorpId: !!CORP_ID,
-    features: ['telegram_forward', 'auto_reply', 'homework_sync', 'homework_reminder']
+    features: ['telegram_forward', 'auto_reply', 'homework_sync', 'homework_reminder', 'customer_groups']
   });
 });
 
