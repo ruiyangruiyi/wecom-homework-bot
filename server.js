@@ -438,21 +438,17 @@ async function handleHomeworkGroupSelection(content, fromUser) {
   const homework = detectHomework(homeworkContent) || { raw: homeworkContent, content: homeworkContent, pattern: 'direct' };
   const homeworkId = await saveHomework(homework, group.chat_id, fromUser);
   
-  // 发送到客户群
-  const forwardMsg = `📚 作业通知\n\n${homeworkContent}\n\n⏰ 发布时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`;
-  const result = await sendMessageToCustomerGroup(group.chat_id, group.name, forwardMsg);
+  // 格式化作业内容，方便复制
+  const formattedHomework = `📚 作业通知\n\n${homeworkContent}\n\n⏰ ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`;
   
   // 同步到 Telegram
-  await sendToTelegram(`📤 <b>作业已发布</b>\n\n🏠 群: ${group.name}\n📝 内容: ${homeworkContent.substring(0, 100)}...`);
+  await sendToTelegram(`📤 <b>作业已保存</b>\n\n🏠 群: ${group.name}\n📝 内容: ${homeworkContent.substring(0, 100)}...`);
   
-  if (result.success) {
-    return { type: 'text', content: `✅ 作业已发送到「${group.name}」！` };
-  } else {
-    return { 
-      type: 'text', 
-      content: `⚠️ 自动发送失败\n\n请手动复制到群里：\n\n${forwardMsg}` 
-    };
-  }
+  // 返回提示，引导老师去群发助手发送
+  return { 
+    type: 'text', 
+    content: `✅ 作业已保存！\n\n🏠 目标群：${group.name}\n\n📋 请复制以下内容，通过「群发助手」发送到群：\n\n${formattedHomework}\n\n💡 操作：企业微信 → 工作台 → 群发助手` 
+  };
 }
 
 // 处理作业内容输入（旧流程，保留兼容）
