@@ -49,6 +49,46 @@ function clearUserSession(userId) {
   userSessions.delete(userId);
 }
 
+// 主菜单配置
+const MAIN_MENU = [
+  { id: 1, name: '群二维码', trigger: 'qrcode' },
+  { id: 2, name: '建群', trigger: 'creategroup' },
+  { id: 3, name: '状态', trigger: 'status' },
+];
+
+// 生成主菜单文本
+function getMainMenuText() {
+  const list = MAIN_MENU.map(item => `${item.id}. ${item.name}`).join('\n');
+  return `📌 功能菜单：\n${list}\n\n回复数字选择功能`;
+}
+
+// 处理菜单选择
+async function handleMenuSelection(content, fromUser) {
+  const session = getUserSession(fromUser);
+  if (!session || session.type !== 'main_menu') {
+    return null;
+  }
+  
+  const num = parseInt(content.trim());
+  if (isNaN(num) || num < 1 || num > MAIN_MENU.length) {
+    return null;
+  }
+  
+  clearUserSession(fromUser);
+  const selected = MAIN_MENU[num - 1];
+  
+  switch (selected.trigger) {
+    case 'qrcode':
+      return { type: 'redirect', command: 'qr' };
+    case 'creategroup':
+      return { type: 'text', content: '建群指令格式：\n建群 群名称 成员1,成员2\n\n例如：建群 测试群 zhangsan,lisi' };
+    case 'status':
+      return { type: 'text', content: `✅ 系统运行正常\n⏰ ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}` };
+    default:
+      return null;
+  }
+}
+
 async function sendToTelegram(message) {
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return null;
   try {
@@ -385,12 +425,12 @@ async function sendWeComMessage(toUser, content) {
 }
 
 const AUTO_REPLIES = {
-  '你好': '您好，我是教学管理助手，有什么可以帮您的？',
-  'hello': '您好，我是教学管理助手，有什么可以帮您的？',
-  'hi': '您好，我是教学管理助手，有什么可以帮您的？',
-  '帮助': '👋 您好！我是教学管理助手。\n\n📌 可用命令：\n• 二维码/qr - 获取外部群二维码\n• 建群 - 创建班级群\n• 状态 - 查看系统状态',
-  'help': '👋 您好！我是教学管理助手。\n\n📌 可用命令：\n• 二维码/qr - 获取外部群二维码\n• 建群 - 创建班级群\n• 状态 - 查看系统状态',
-  '?': '👋 您好！我是教学管理助手。\n\n📌 可用命令：\n• 二维码/qr - 获取外部群二维码\n• 建群 - 创建班级群\n• 状态 - 查看系统状态',
+  '你好': null,  // 特殊处理，显示菜单
+  'hello': null,
+  'hi': null,
+  '帮助': null,
+  'help': null,
+  '?': null,
   '建群': null,  // 特殊处理
   '状态': null,
 };
@@ -481,6 +521,24 @@ app.post('/api/wecom/callback', async (req, res) => {
           return res.send('success');
         }
 
+        // 检查是否是菜单选择
+        const menuReply = await handleMenuSelection(content, fromUser);
+        if (menuReply) {
+          if (menuReply.type === 'redirect') {
+            // 重定向到其他命令
+            const qrReply = await handleQrcodeCommand(menuReply.command, fromUser);
+            if (qrReply.type === 'image') {
+              await sendWeComMessage(fromUser, `📱 「${qrReply.groupName}」入群二维码：`);
+              await sendWeComImage(fromUser, qrReply.mediaId);
+            } else {
+              await sendWeComMessage(fromUser, qrReply.content);
+            }
+          } else {
+            await sendWeComMessage(fromUser, menuReply.content);
+          }
+          return res.send('success');
+        }
+
         // 检查是否是序号选择（群二维码）
         const selectionReply = await handleQrcodeSelection(content, fromUser);
         if (selectionReply) {
@@ -505,6 +563,14 @@ app.post('/api/wecom/callback', async (req, res) => {
           return res.send('success');
         }
 
+        // 检查是否是帮助/打招呼触发词，显示主菜单
+        const helpTriggers = ['你好', '您好', 'hello', 'hi', '帮助', 'help', '?', '？', '菜单'];
+        if (helpTriggers.includes(content.trim().toLowerCase())) {
+          setUserSession(fromUser, { type: 'main_menu' });
+          await sendWeComMessage(fromUser, getMainMenuText());
+          return res.send('success');
+        }
+
         const reply = getAutoReply(content);
         if (reply) {
           await sendWeComMessage(fromUser, reply);
@@ -515,7 +581,8 @@ app.post('/api/wecom/callback', async (req, res) => {
       await sendToTelegram(telegramMsg);
 
       if (event === 'subscribe') {
-        await sendWeComMessage(fromUser, '👋 欢迎使用教学管理助手！\n\n发送"帮助"查看可用命令。');
+        setUserSession(fromUser, { type: 'main_menu' });
+        await sendWeComMessage(fromUser, `👋 欢迎使用教学管理助手！\n\n${getMainMenuText()}`);
       }
     }
 
