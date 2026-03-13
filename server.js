@@ -293,14 +293,14 @@ async function sendWeComImage(toUser, mediaId) {
 // 检查是否是二维码指令（支持多种触发词）
 function isQrcodeCommand(text) {
   const t = text.trim().toLowerCase();
-  // 支持：群二维码、二维码、qr、QR
-  return /^(群二维码|二维码|qr)(\s|$)/i.test(t);
+  // 支持：群二维码、二维码、qr、/qr
+  return /^(群二维码|二维码|\/qr|qr)(\s|$)/i.test(t);
 }
 
 // 提取群名参数
 function extractGroupName(text) {
   const t = text.trim();
-  const match = t.match(/^(群二维码|二维码|qr)\s+(.+)$/i);
+  const match = t.match(/^(群二维码|二维码|\/qr|qr)\s+(.+)$/i);
   return match ? match[2].trim() : null;
 }
 
@@ -565,7 +565,8 @@ app.post('/api/wecom/callback', async (req, res) => {
 
         // 检查是否是帮助/打招呼触发词，显示主菜单
         const helpTriggers = ['你好', '您好', 'hello', 'hi', '帮助', 'help', '?', '？', '菜单'];
-        if (helpTriggers.includes(content.trim().toLowerCase())) {
+        const contentLower = content.trim().toLowerCase();
+        if (helpTriggers.some(t => t.toLowerCase() === contentLower)) {
           setUserSession(fromUser, { type: 'main_menu' });
           await sendWeComMessage(fromUser, getMainMenuText());
           return res.send('success');
