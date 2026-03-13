@@ -304,6 +304,73 @@ function isQrcodeCommand(text) {
 
 // ========== 发作业功能 ==========
 
+// 发送消息到客户群（通过群发接口）
+async function sendMessageToCustomerGroup(chatId, groupName, message) {
+  try {
+    const token = await getAccessToken();
+    // 使用客户群群发接口
+    const url = `https://qyapi.weixin.qq.com/cgi-bin/externalcontact/add_msg_template?access_token=${token}`;
+    
+    const response = await axios.post(url, {
+      chat_type: 'group',
+      chat_id_list: [chatId],
+      text: {
+        content: message
+      }
+    });
+    
+    if (response.data.errcode === 0) {
+      console.log(`✅ 消息已发送到群「${groupName}」`);
+      return { success: true };
+    } else {
+      console.error(`❌ 发送群消息失败: ${response.data.errmsg}`);
+      return { success: false, error: response.data.errmsg, errcode: response.data.errcode };
+    }
+  } catch (error) {
+    console.error('发送群消息异常:', error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+// 处理作业转发选择
+async function handleHomeworkForwardSelection(content, fromUser) {
+  const session = getUserSession(fromUser);
+  if (!session || session.type !== 'homework_forward') {
+    return null;
+  }
+  
+  const num = parseInt(content.trim());
+  
+  // 跳过转发
+  if (num === 0) {
+    clearUserSession(fromUser);
+    return { type: 'text', content: '✅ 已跳过转发，作业已保存到系统' };
+  }
+  
+  if (isNaN(num) || num < 1 || num > session.groups.length) {
+    return null;
+  }
+  
+  const group = session.groups[num - 1];
+  clearUserSession(fromUser);
+  
+  // 发送到客户群
+  const forwardMsg = `📚 作业通知\n\n${session.homeworkContent}\n\n⏰ 发布时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`;
+  const result = await sendMessageToCustomerGroup(group.chat_id, group.name, forwardMsg);
+  
+  if (result.success) {
+    // 同步到 Telegram
+    await sendToTelegram(`📤 <b>作业已转发</b>\n\n🏠 群: ${group.name}\n📝 内容: ${session.homeworkContent.substring(0, 100)}...`);
+    return { type: 'text', content: `✅ 作业已转发到「${group.name}」！` };
+  } else {
+    // 如果群发接口失败，尝试提示手动转发
+    return { 
+      type: 'text', 
+      content: `⚠️ 自动转发失败（${result.error || '权限不足'}）\n\n请手动复制以下内容到群里：\n\n${forwardMsg}` 
+    };
+  }
+}
+
 // 处理发作业流程
 async function handleHomeworkStart(fromUser) {
   // 获取群列表供选择
@@ -580,13 +647,36 @@ app.post('/api/wecom/callback', async (req, res) => {
     console.log(`消息类型: ${msgType}, 发送者: ${fromUser}, 内容: ${content || event}`);
 
     if (msgType === 'text') {
+      // 先检查是否在作业转发流程中
+      const homeworkForwardReply = await handleHomeworkForwardSelection(content, fromUser);
+      if (homeworkForwardReply) {
+        await sendWeComMessage(fromUser, homeworkForwardReply.content);
+        return res.send('success');
+      }
+
       const homework = detectHomework(content);
       if (homework) {
         console.log('📚 检测到作业消息');
-        await saveHomework(homework, chatId, fromUser);
+        // 保存作业并询问转发到哪个群
+        const homeworkId = await saveHomework(homework, 'pending', fromUser);
         const telegramMsg = `📚 <b>作业已同步</b>\n\n👤 发布者: <code>${fromUser}</code>\n📝 内容: ${homework.content.substring(0, 100)}\n⏰ 时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`;
         await sendToTelegram(telegramMsg);
-        await sendWeComMessage(fromUser, '✅ 作业已同步到系统，学生可以查看了！');
+        
+        // 获取群列表供选择
+        const result = await getCustomerGroups();
+        if (result.success && result.groups.length > 0) {
+          const list = result.groups.map((g, i) => `${i + 1}. ${g.name}`).join('\n');
+          setUserSession(fromUser, { 
+            type: 'homework_forward', 
+            groups: result.groups, 
+            homeworkId,
+            homeworkContent: homework.content 
+          });
+          await sendWeComMessage(fromUser, `✅ 作业已保存！\n\n📋 选择要转发到的群：\n${list}\n\n回复序号转发，回复「0」跳过`);
+        } else {
+          await sendWeComMessage(fromUser, '✅ 作业已保存！\n\n⚠️ 暂无可转发的群');
+        }
+        return res.send('success');
       } else {
         const telegramMsg = `📩 <b>企业微信消息</b>\n\n👤 发送者: <code>${fromUser}</code>\n💬 内容: ${content}\n⏰ 时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`;
         await sendToTelegram(telegramMsg);

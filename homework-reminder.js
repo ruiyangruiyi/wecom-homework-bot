@@ -62,11 +62,39 @@ function getPositiveMessage() {
 }
 
 /**
+ * 发送消息到客户群
+ */
+async function sendMessageToCustomerGroup(chatId, message) {
+  try {
+    const token = await getAccessToken();
+    const url = `https://qyapi.weixin.qq.com/cgi-bin/externalcontact/add_msg_template?access_token=${token}`;
+    
+    const response = await axios.post(url, {
+      chat_type: 'group',
+      chat_id_list: [chatId],
+      text: {
+        content: message
+      }
+    });
+    
+    if (response.data.errcode === 0) {
+      console.log(`✅ 提醒已发送到群 ${chatId}`);
+      return true;
+    } else {
+      console.error(`❌ 发送群消息失败: ${response.data.errmsg}`);
+      return false;
+    }
+  } catch (error) {
+    console.error('发送群消息异常:', error.message);
+    return false;
+  }
+}
+
+/**
  * 发送作业提醒
  * @param {string} chatId 群ID
- * @param {string} toUser 接收者
  */
-async function sendHomeworkReminder(chatId, toUser) {
+async function sendHomeworkReminder(chatId) {
   try {
     const homeworks = await getRecentHomeworks(chatId, 5);
     
@@ -90,8 +118,9 @@ async function sendHomeworkReminder(chatId, toUser) {
 
     message += '\n\n💬 如有问题，请随时提问。祝你学习愉快！';
 
-    await sendWeComMessage(toUser, message);
-    console.log(`✅ 作业提醒已发送给 ${toUser}`);
+    // 发送到客户群
+    await sendMessageToCustomerGroup(chatId, message);
+    console.log(`✅ 作业提醒已发送到群 ${chatId}`);
   } catch (error) {
     console.error('❌ 发送作业提醒失败:', error.message);
   }
@@ -106,12 +135,13 @@ function initSchedules() {
   cron.schedule('0 18 * * *', async () => {
     console.log('📚 触发作业提醒任务 (18:00)');
     try {
-      // 获取所有群
+      // 获取所有有作业的群
       const chatIds = await redis.keys('chat:*:homeworks');
       for (const key of chatIds) {
         const chatId = key.replace('chat:', '').replace(':homeworks', '');
-        // 这里应该获取群内所有学生，暂时发送给管理员
-        await sendHomeworkReminder(chatId, '@all');
+        if (chatId !== 'pending') {
+          await sendHomeworkReminder(chatId);
+        }
       }
     } catch (error) {
       console.error('❌ 作业提醒任务失败:', error.message);
@@ -125,8 +155,10 @@ function initSchedules() {
       const chatIds = await redis.keys('chat:*:homeworks');
       for (const key of chatIds) {
         const chatId = key.replace('chat:', '').replace(':homeworks', '');
-        const message = '⏰ 亲爱的同学们，作业截止时间即将到来，请抓紧时间完成！\n\n💪 坚持就是胜利，加油！';
-        await sendWeComMessage('@all', message);
+        if (chatId !== 'pending') {
+          const message = '⏰ 亲爱的同学们，作业截止时间即将到来，请抓紧时间完成！\n\n💪 坚持就是胜利，加油！';
+          await sendMessageToCustomerGroup(chatId, message);
+        }
       }
     } catch (error) {
       console.error('❌ 最后提醒任务失败:', error.message);
