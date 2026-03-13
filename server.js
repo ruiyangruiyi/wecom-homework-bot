@@ -381,24 +381,37 @@ async function handleHomeworkForwardSelection(content, fromUser) {
   }
 }
 
-// 处理发作业流程
+// 处理发作业流程 - 第一步：提示输入作业内容
 async function handleHomeworkStart(fromUser) {
+  setUserSession(fromUser, { type: 'homework_input_first' });
+  return { type: 'text', content: '📚 发作业\n\n请输入作业内容：' };
+}
+
+// 处理作业内容输入 - 第二步：输入内容后选群
+async function handleHomeworkContentInput(content, fromUser) {
+  const session = getUserSession(fromUser);
+  if (!session || session.type !== 'homework_input_first') {
+    return null;
+  }
+  
   // 获取群列表供选择
   const result = await getCustomerGroups();
   if (!result.success) {
+    clearUserSession(fromUser);
     return { type: 'text', content: `❌ 获取群列表失败: ${result.error}` };
   }
   
   if (result.groups.length === 0) {
+    clearUserSession(fromUser);
     return { type: 'text', content: '暂无外部群，请先创建群' };
   }
   
   const list = result.groups.map((g, i) => `${i + 1}. ${g.name}`).join('\n');
-  setUserSession(fromUser, { type: 'homework_select_group', groups: result.groups });
-  return { type: 'text', content: `📚 发作业 - 选择目标群：\n${list}\n\n回复序号选择` };
+  setUserSession(fromUser, { type: 'homework_select_group', groups: result.groups, homeworkContent: content });
+  return { type: 'text', content: `✅ 作业内容已记录\n\n📋 选择要发送到的群：\n${list}\n\n回复序号选择，回复「0」取消` };
 }
 
-// 处理群选择
+// 处理群选择 - 第三步：选群后转发
 async function handleHomeworkGroupSelection(content, fromUser) {
   const session = getUserSession(fromUser);
   if (!session || session.type !== 'homework_select_group') {
@@ -406,16 +419,43 @@ async function handleHomeworkGroupSelection(content, fromUser) {
   }
   
   const num = parseInt(content.trim());
+  
+  // 取消
+  if (num === 0) {
+    clearUserSession(fromUser);
+    return { type: 'text', content: '已取消发作业' };
+  }
+  
   if (isNaN(num) || num < 1 || num > session.groups.length) {
     return null;
   }
   
   const group = session.groups[num - 1];
-  setUserSession(fromUser, { type: 'homework_input', group });
-  return { type: 'text', content: `已选择「${group.name}」\n\n请输入作业内容：\n（支持多行，发送后自动同步到群）` };
+  const homeworkContent = session.homeworkContent;
+  clearUserSession(fromUser);
+  
+  // 保存作业
+  const homework = detectHomework(homeworkContent) || { raw: homeworkContent, content: homeworkContent, pattern: 'direct' };
+  const homeworkId = await saveHomework(homework, group.chat_id, fromUser);
+  
+  // 发送到客户群
+  const forwardMsg = `📚 作业通知\n\n${homeworkContent}\n\n⏰ 发布时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`;
+  const result = await sendMessageToCustomerGroup(group.chat_id, group.name, forwardMsg);
+  
+  // 同步到 Telegram
+  await sendToTelegram(`📤 <b>作业已发布</b>\n\n🏠 群: ${group.name}\n📝 内容: ${homeworkContent.substring(0, 100)}...`);
+  
+  if (result.success) {
+    return { type: 'text', content: `✅ 作业已发送到「${group.name}」！` };
+  } else {
+    return { 
+      type: 'text', 
+      content: `⚠️ 自动发送失败\n\n请手动复制到群里：\n\n${forwardMsg}` 
+    };
+  }
 }
 
-// 处理作业内容输入
+// 处理作业内容输入（旧流程，保留兼容）
 async function handleHomeworkInput(content, fromUser) {
   const session = getUserSession(fromUser);
   if (!session || session.type !== 'homework_input') {
@@ -741,6 +781,13 @@ app.post('/api/wecom/callback', async (req, res) => {
           return res.send('success');
         }
 
+        // 检查是否是发作业流程中的内容输入（新流程：先输入内容）
+        const homeworkContentReply = await handleHomeworkContentInput(content, fromUser);
+        if (homeworkContentReply) {
+          await sendWeComMessage(fromUser, homeworkContentReply.content);
+          return res.send('success');
+        }
+
         // 检查是否是发作业流程中的群选择
         const homeworkGroupReply = await handleHomeworkGroupSelection(content, fromUser);
         if (homeworkGroupReply) {
@@ -748,7 +795,7 @@ app.post('/api/wecom/callback', async (req, res) => {
           return res.send('success');
         }
 
-        // 检查是否是发作业流程中的内容输入
+        // 检查是否是发作业流程中的内容输入（旧流程，保留兼容）
         const homeworkInputReply = await handleHomeworkInput(content, fromUser);
         if (homeworkInputReply) {
           await sendWeComMessage(fromUser, homeworkInputReply.content);
