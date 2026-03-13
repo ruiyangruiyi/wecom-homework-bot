@@ -563,8 +563,8 @@ app.post('/api/wecom/callback', async (req, res) => {
           return res.send('success');
         }
 
-        // 检查是否是帮助/打招呼触发词，显示主菜单
-        const helpTriggers = ['你好', '您好', 'hello', 'hi', '帮助', 'help', '?', '？', '菜单'];
+        // 检查是否是帮助触发词，显示主菜单
+        const helpTriggers = ['h', '0', '?', '？', '你好', '您好', 'hello', 'hi', '帮助', 'help', '菜单'];
         const contentLower = content.trim().toLowerCase();
         if (helpTriggers.some(t => t.toLowerCase() === contentLower)) {
           setUserSession(fromUser, { type: 'main_menu' });
@@ -572,10 +572,9 @@ app.post('/api/wecom/callback', async (req, res) => {
           return res.send('success');
         }
 
-        const reply = getAutoReply(content);
-        if (reply) {
-          await sendWeComMessage(fromUser, reply);
-        }
+        // 无法识别的消息，返回帮助菜单
+        setUserSession(fromUser, { type: 'main_menu' });
+        await sendWeComMessage(fromUser, getMainMenuText());
       }
     } else if (msgType === 'event') {
       const telegramMsg = `📩 <b>企业微信事件</b>\n\n👤 用户: <code>${fromUser}</code>\n📌 事件: ${event}\n⏰ 时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`;
