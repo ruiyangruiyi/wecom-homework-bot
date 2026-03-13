@@ -695,12 +695,22 @@ app.post('/api/wecom/callback', async (req, res) => {
     const event = msgParsed.xml.Event ? msgParsed.xml.Event[0] : '';
 
     console.log(`消息类型: ${msgType}, 发送者: ${fromUser}, 内容: ${content || event}`);
+    console.log('[TEST] 消息处理开始，msgType:', msgType);
 
     if (msgType === 'text') {
       // 先检查是否在作业转发流程中
       const homeworkForwardReply = await handleHomeworkForwardSelection(content, fromUser);
       if (homeworkForwardReply) {
         await sendWeComMessage(fromUser, homeworkForwardReply.content);
+        return res.send('success');
+      }
+
+      // 单独「作业」关键词触发发作业流程（优先处理）
+      const contentTrimmed = content.trim();
+      if (contentTrimmed === '作业' || contentTrimmed === '发作业' || contentTrimmed === '布置作业') {
+        console.log('[作业] 单独关键词触发，进入发作业流程');
+        const hwReply = await handleHomeworkStart(fromUser);
+        await sendWeComMessage(fromUser, hwReply.content);
         return res.send('success');
       }
 
@@ -732,13 +742,6 @@ app.post('/api/wecom/callback', async (req, res) => {
         await sendToTelegram(telegramMsg);
 
         // 单独「作业」关键词触发发作业流程
-        const contentTrimmed = content.trim();
-        if (contentTrimmed === '作业' || contentTrimmed === '发作业' || contentTrimmed === '布置作业') {
-          const hwReply = await handleHomeworkStart(fromUser);
-          await sendWeComMessage(fromUser, hwReply.content);
-          return res.send('success');
-        }
-
         // 特殊处理建群指令
         if (content.trim().startsWith('建群')) {
           const createGroupReply = await handleCreateGroupCommand(content, fromUser);
