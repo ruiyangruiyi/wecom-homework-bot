@@ -79,7 +79,7 @@
 curl http://你的域名/api/customer-groups
 
 # 生成指定群的入群二维码
-curl -X POST http://你的域名/api/customer-groups/{chatId}/qrcode
+curl http://你的域名/api/customer-groups/{chatId}/qrcode
 ```
 
 ## 🚀 快速开始
@@ -165,7 +165,7 @@ pm2 start server.js --name wecom-bot
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | /api/customer-groups | 获取所有客户群列表 |
-| POST | /api/customer-groups/:chatId/qrcode | 生成指定群的入群二维码 |
+| GET | /api/customer-groups/:chatId/qrcode | 生成指定群的入群二维码 |
 
 ### 内部群管理
 

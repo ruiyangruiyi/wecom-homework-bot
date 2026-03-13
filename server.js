@@ -49,6 +49,16 @@ function clearUserSession(userId) {
   userSessions.delete(userId);
 }
 
+// 定期清理过期会话（每10分钟）
+setInterval(() => {
+  const now = Date.now();
+  for (const [userId, session] of userSessions.entries()) {
+    if (now - session.timestamp > SESSION_TIMEOUT) {
+      userSessions.delete(userId);
+    }
+  }
+}, 10 * 60 * 1000);
+
 // 主菜单配置
 const MAIN_MENU = [
   { id: 1, name: '群二维码', desc: '获取外部群入群码', trigger: 'qrcode' },
