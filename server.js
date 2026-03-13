@@ -116,6 +116,164 @@ async function getAccessToken() {
 }
 
 
+// 获取客户群列表
+async function getCustomerGroups() {
+  try {
+    const token = await getAccessToken();
+    const url = `https://qyapi.weixin.qq.com/cgi-bin/externalcontact/groupchat/list?access_token=${token}`;
+    const response = await axios.post(url, {
+      status_filter: 0,
+      limit: 100
+    });
+    if (response.data.errcode !== 0) {
+      return { success: false, error: response.data.errmsg };
+    }
+    // 获取每个群的详情
+    const groups = [];
+    for (const item of response.data.group_chat_list || []) {
+      const detailUrl = `https://qyapi.weixin.qq.com/cgi-bin/externalcontact/groupchat/get?access_token=${token}`;
+      const detailRes = await axios.post(detailUrl, { chat_id: item.chat_id, need_name: 1 });
+      if (detailRes.data.errcode === 0) {
+        groups.push({
+          chatId: item.chat_id,
+          name: detailRes.data.group_chat.name || '未命名群',
+          memberCount: detailRes.data.group_chat.member_list?.length || 0
+        });
+      }
+    }
+    return { success: true, groups };
+  } catch (error) {
+    console.error('[客户群列表] 异常:', error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+// 生成客户群二维码
+async function getGroupQrcode(chatId) {
+  try {
+    const token = await getAccessToken();
+    const url = `https://qyapi.weixin.qq.com/cgi-bin/externalcontact/groupchat/get_join_way?access_token=${token}`;
+    // 先尝试获取已有的入群方式
+    const listUrl = `https://qyapi.weixin.qq.com/cgi-bin/externalcontact/groupchat/list_join_way?access_token=${token}`;
+    const listRes = await axios.post(listUrl, { chat_id: chatId, limit: 10 });
+    
+    if (listRes.data.errcode === 0 && listRes.data.join_way_list?.length > 0) {
+      // 已有入群方式，获取二维码
+      const configId = listRes.data.join_way_list[0].config_id;
+      const getUrl = `https://qyapi.weixin.qq.com/cgi-bin/externalcontact/groupchat/get_join_way?access_token=${token}`;
+      const getRes = await axios.post(getUrl, { config_id: configId });
+      if (getRes.data.errcode === 0) {
+        return { success: true, qrcodeUrl: getRes.data.join_way.qr_code };
+      }
+    }
+    
+    // 没有入群方式，创建一个
+    const addUrl = `https://qyapi.weixin.qq.com/cgi-bin/externalcontact/groupchat/add_join_way?access_token=${token}`;
+    const addRes = await axios.post(addUrl, {
+      scene: 2,
+      chat_id_list: [chatId],
+      auto_create_room: 0
+    });
+    if (addRes.data.errcode === 0) {
+      return { success: true, qrcodeUrl: addRes.data.qr_code };
+    }
+    return { success: false, error: addRes.data.errmsg };
+  } catch (error) {
+    console.error('[群二维码] 异常:', error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+// 上传媒体文件到企业微信
+async function uploadMedia(imageUrl, type = 'image') {
+  try {
+    const token = await getAccessToken();
+    // 下载图片
+    const imageRes = await axios.get(imageUrl, { responseType: 'arraybuffer' });
+    const imageBuffer = Buffer.from(imageRes.data);
+    
+    // 上传到企业微信
+    const FormData = require('form-data');
+    const form = new FormData();
+    form.append('media', imageBuffer, { filename: 'qrcode.png', contentType: 'image/png' });
+    
+    const uploadUrl = `https://qyapi.weixin.qq.com/cgi-bin/media/upload?access_token=${token}&type=${type}`;
+    const uploadRes = await axios.post(uploadUrl, form, {
+      headers: form.getHeaders()
+    });
+    
+    if (uploadRes.data.errcode && uploadRes.data.errcode !== 0) {
+      return { success: false, error: uploadRes.data.errmsg };
+    }
+    return { success: true, mediaId: uploadRes.data.media_id };
+  } catch (error) {
+    console.error('[上传媒体] 异常:', error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+// 发送图片消息
+async function sendWeComImage(toUser, mediaId) {
+  const token = await getAccessToken();
+  const url = `https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${token}`;
+  const response = await axios.post(url, {
+    touser: toUser,
+    msgtype: 'image',
+    agentid: AGENT_ID,
+    image: { media_id: mediaId }
+  });
+  return response.data;
+}
+
+// 处理群二维码指令
+async function handleQrcodeCommand(content, fromUser) {
+  const text = content.trim();
+  const match = text.match(/^群二维码(?:\s+(.+))?$/);
+  
+  if (!match) {
+    return { type: 'text', content: '指令格式：\n• 群二维码 - 查看所有外部群\n• 群二维码 群名 - 获取指定群的二维码' };
+  }
+  
+  const groupName = match[1]?.trim();
+  
+  // 获取群列表
+  const result = await getCustomerGroups();
+  if (!result.success) {
+    return { type: 'text', content: `❌ 获取群列表失败: ${result.error}` };
+  }
+  
+  if (result.groups.length === 0) {
+    return { type: 'text', content: '暂无外部群' };
+  }
+  
+  // 如果没指定群名，返回群列表
+  if (!groupName) {
+    const list = result.groups.map((g, i) => `${i + 1}. ${g.name} (${g.memberCount}人)`).join('\n');
+    return { type: 'text', content: `📋 外部群列表：\n\n${list}\n\n发送「群二维码 群名」获取入群二维码` };
+  }
+  
+  // 查找匹配的群
+  const group = result.groups.find(g => g.name.includes(groupName));
+  if (!group) {
+    return { type: 'text', content: `❌ 未找到包含「${groupName}」的群` };
+  }
+  
+  // 获取二维码
+  const qrResult = await getGroupQrcode(group.chatId);
+  if (!qrResult.success) {
+    return { type: 'text', content: `❌ 获取二维码失败: ${qrResult.error}` };
+  }
+  
+  // 上传图片并发送
+  const uploadResult = await uploadMedia(qrResult.qrcodeUrl);
+  if (!uploadResult.success) {
+    // 上传失败，返回链接
+    return { type: 'text', content: `📱 「${group.name}」入群二维码：\n${qrResult.qrcodeUrl}` };
+  }
+  
+  return { type: 'image', mediaId: uploadResult.mediaId, groupName: group.name };
+}
+
 // 创建企业微信群聊（内部群）
 async function createWeComGroup(name, owner, userList) {
   try {
@@ -176,10 +334,11 @@ const AUTO_REPLIES = {
   '你好': '您好，我是教学管理助手，有什么可以帮您的？',
   'hello': '您好，我是教学管理助手，有什么可以帮您的？',
   'hi': '您好，我是教学管理助手，有什么可以帮您的？',
-  '帮助': '👋 您好！我是教学管理助手。\n\n📌 可用命令：\n• 你好 - 打招呼\n• 帮助 - 查看帮助\n• 建群 - 创建班级群\n• 状态 - 查看系统状态',
-  'help': '👋 您好！我是教学管理助手。\n\n📌 可用命令：\n• 你好 - 打招呼\n• 帮助 - 查看帮助\n• 建群 - 创建班级群\n• 状态 - 查看系统状态',
-  '?': '👋 您好！我是教学管理助手。\n\n📌 可用命令：\n• 你好 - 打招呼\n• 帮助 - 查看帮助\n• 建群 - 创建班级群\n• 状态 - 查看系统状态',
+  '帮助': '👋 您好！我是教学管理助手。\n\n📌 可用命令：\n• 你好 - 打招呼\n• 帮助 - 查看帮助\n• 建群 - 创建班级群\n• 群二维码 - 获取外部群二维码\n• 状态 - 查看系统状态',
+  'help': '👋 您好！我是教学管理助手。\n\n📌 可用命令：\n• 你好 - 打招呼\n• 帮助 - 查看帮助\n• 建群 - 创建班级群\n• 群二维码 - 获取外部群二维码\n• 状态 - 查看系统状态',
+  '?': '👋 您好！我是教学管理助手。\n\n📌 可用命令：\n• 你好 - 打招呼\n• 帮助 - 查看帮助\n• 建群 - 创建班级群\n• 群二维码 - 获取外部群二维码\n• 状态 - 查看系统状态',
   '建群': null,  // 特殊处理
+  '群二维码': null,  // 特殊处理
   '状态': null,
 };
 
@@ -266,6 +425,18 @@ app.post('/api/wecom/callback', async (req, res) => {
         if (content.trim().startsWith('建群')) {
           const createGroupReply = await handleCreateGroupCommand(content, fromUser);
           await sendWeComMessage(fromUser, createGroupReply);
+          return res.send('success');
+        }
+
+        // 特殊处理群二维码指令
+        if (content.trim().startsWith('群二维码')) {
+          const qrReply = await handleQrcodeCommand(content, fromUser);
+          if (qrReply.type === 'image') {
+            await sendWeComMessage(fromUser, `📱 「${qrReply.groupName}」入群二维码：`);
+            await sendWeComImage(fromUser, qrReply.mediaId);
+          } else {
+            await sendWeComMessage(fromUser, qrReply.content);
+          }
           return res.send('success');
         }
 
