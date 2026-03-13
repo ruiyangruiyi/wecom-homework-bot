@@ -691,6 +691,14 @@ app.post('/api/wecom/callback', async (req, res) => {
         const telegramMsg = `📩 <b>企业微信消息</b>\n\n👤 发送者: <code>${fromUser}</code>\n💬 内容: ${content}\n⏰ 时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`;
         await sendToTelegram(telegramMsg);
 
+        // 单独「作业」关键词触发发作业流程
+        const contentTrimmed = content.trim();
+        if (contentTrimmed === '作业' || contentTrimmed === '发作业' || contentTrimmed === '布置作业') {
+          const hwReply = await handleHomeworkStart(fromUser);
+          await sendWeComMessage(fromUser, hwReply.content);
+          return res.send('success');
+        }
+
         // 特殊处理建群指令
         if (content.trim().startsWith('建群')) {
           const createGroupReply = await handleCreateGroupCommand(content, fromUser);
