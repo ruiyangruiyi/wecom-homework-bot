@@ -5,6 +5,7 @@ const axios = require('axios');
 const xml2js = require('xml2js');
 const { detectHomework, saveHomework } = require('./homework-sync');
 const { initSchedules } = require('./homework-reminder');
+const { registerHomeworkRoutes } = require('./homework-api');
 
 const app = express();
 app.use(express.text({ type: 'text/xml' }));
@@ -327,6 +328,10 @@ app.get('/', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
+
+// 注册作业 CRUD 路由
+registerHomeworkRoutes(app);
+
 app.listen(PORT, () => {
   console.log('==========================================');
   console.log('  英语培训系统 - 企业微信服务 v5.0');
