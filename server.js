@@ -6,6 +6,8 @@ const xml2js = require('xml2js');
 const { detectHomework, saveHomework } = require('./homework-sync');
 const { initSchedules } = require('./homework-reminder');
 const { registerHomeworkRoutes } = require('./homework-api');
+const { registerClassRoutes } = require('./class-api');
+const { syncHomeworkToGroup } = require('./homework-group-sync');
 
 const app = express();
 app.use(express.text({ type: 'text/xml' }));
@@ -98,6 +100,58 @@ class WXBizMsgCrypt {
 }
 
 const wxCrypt = hasConfig ? new WXBizMsgCrypt(TOKEN, ENCODING_AES_KEY, CORP_ID) : null;
+
+// 客户群事件处理
+async function handleExternalChatEvent(xml) {
+  const changeType = xml.ChangeType ? xml.ChangeType[0] : '';
+  const chatId = xml.ChatId ? xml.ChatId[0] : '';
+  const updateDetail = xml.UpdateDetail ? xml.UpdateDetail[0] : '';
+  const joinScene = xml.JoinScene ? xml.JoinScene[0] : '';
+  const quitScene = xml.QuitScene ? xml.QuitScene[0] : '';
+  const memChangeCnt = xml.MemChangeCnt ? xml.MemChangeCnt[0] : '';
+
+  console.log(`========== 客户群事件 ==========`);
+  console.log(`变更类型: ${changeType}`);
+  console.log(`群ID: ${chatId}`);
+  console.log(`详情: ${updateDetail || joinScene || quitScene}`);
+
+  let telegramMsg = '';
+  
+  switch (changeType) {
+    case 'create':
+      telegramMsg = `👥 <b>客户群创建</b>\n\n🆔 群ID: <code>${chatId}</code>\n⏰ 时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`;
+      break;
+    case 'update':
+      const updateTypes = {
+        'add_member': '新成员加入',
+        'del_member': '成员退出',
+        'change_owner': '群主变更',
+        'change_name': '群名变更',
+        'change_notice': '群公告变更'
+      };
+      const updateDesc = updateTypes[updateDetail] || updateDetail;
+      telegramMsg = `👥 <b>客户群变更</b>\n\n🆔 群ID: <code>${chatId}</code>\n📝 变更: ${updateDesc}\n👤 人数变化: ${memChangeCnt || 'N/A'}\n⏰ 时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`;
+      
+      // 如果是新成员加入，记录入群方式
+      if (updateDetail === 'add_member' && joinScene) {
+        const joinScenes = {
+          '1': '群主邀请',
+          '2': '扫描群二维码',
+          '3': '通过群链接'
+        };
+        telegramMsg += `\n📍 入群方式: ${joinScenes[joinScene] || joinScene}`;
+      }
+      break;
+    case 'dismiss':
+      telegramMsg = `👥 <b>客户群解散</b>\n\n🆔 群ID: <code>${chatId}</code>\n⏰ 时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`;
+      break;
+    default:
+      telegramMsg = `👥 <b>客户群事件</b>\n\n🆔 群ID: <code>${chatId}</code>\n📌 类型: ${changeType}\n⏰ 时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`;
+  }
+
+  await sendToTelegram(telegramMsg);
+  console.log('✅ 客户群事件已转发到 Telegram');
+}
 
 let accessToken = null;
 let tokenExpireTime = 0;
@@ -207,29 +261,31 @@ function getAutoReply(content) {
   return `收到您的消息: "${content}"\n\n发送"帮助"查看可用命令。`;
 }
 
-app.get('/api/wecom/callback', (req, res) => {
+// 统一的 URL 验证处理函数
+function handleCallbackVerify(req, res, source = 'callback') {
   if (!wxCrypt) {
     return res.status(500).send('企业微信配置未设置');
   }
   const { msg_signature, timestamp, nonce, echostr } = req.query;
-  console.log('========== URL验证请求 ==========');
+  console.log(`========== URL验证请求 (${source}) ==========`);
   
   const result = wxCrypt.verifyURL(msg_signature, timestamp, nonce, echostr);
   if (result.code === 0) {
-    console.log('✅ URL验证成功');
+    console.log(`✅ URL验证成功 (${source})`);
     res.send(result.data);
   } else {
-    console.log('❌ URL验证失败:', result.message);
+    console.log(`❌ URL验证失败 (${source}):`, result.message);
     res.status(403).send(result.message);
   }
-});
+}
 
-app.post('/api/wecom/callback', async (req, res) => {
+// 统一的消息处理函数
+async function handleCallbackMessage(req, res, source = 'callback') {
   if (!wxCrypt) {
     return res.send('success');
   }
   const { msg_signature, timestamp, nonce } = req.query;
-  console.log('========== 收到企业微信消息 ==========');
+  console.log(`========== 收到企业微信消息 (${source}) ==========`);
 
   try {
     const xmlBody = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
@@ -250,6 +306,13 @@ app.post('/api/wecom/callback', async (req, res) => {
     const event = msgParsed.xml.Event ? msgParsed.xml.Event[0] : '';
 
     console.log(`消息类型: ${msgType}, 发送者: ${fromUser}, 内容: ${content || event}`);
+
+    // 客户群事件处理：MsgType=event + Event=change_external_chat
+    if (msgType === 'event' && event === 'change_external_chat') {
+      console.log('📍 检测到客户群事件 (change_external_chat)');
+      await handleExternalChatEvent(msgParsed.xml);
+      return res.send('success');
+    }
 
     if (msgType === 'text') {
       const homework = detectHomework(content);
@@ -276,6 +339,7 @@ app.post('/api/wecom/callback', async (req, res) => {
         }
       }
     } else if (msgType === 'event') {
+      // 其他事件处理
       const telegramMsg = `📩 <b>企业微信事件</b>\n\n👤 用户: <code>${fromUser}</code>\n📌 事件: ${event}\n⏰ 时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`;
       await sendToTelegram(telegramMsg);
 
@@ -289,7 +353,16 @@ app.post('/api/wecom/callback', async (req, res) => {
     console.error('处理消息异常:', error);
     res.send('success');
   }
-});
+}
+
+app.get('/api/wecom/callback', (req, res) => handleCallbackVerify(req, res, 'api/wecom/callback'));
+
+app.post('/api/wecom/callback', (req, res) => handleCallbackMessage(req, res, 'api/wecom/callback'));
+
+// /edu/wecom/callback - 统一回调端点（支持客户群事件）
+// 通过 MsgType=event + Event=change_external_chat 区分客户群事件
+app.get('/edu/wecom/callback', (req, res) => handleCallbackVerify(req, res, 'edu/wecom/callback'));
+app.post('/edu/wecom/callback', (req, res) => handleCallbackMessage(req, res, 'edu/wecom/callback'));
 
 app.post('/api/wecom/send', async (req, res) => {
   try {
@@ -310,20 +383,35 @@ app.get('/health', (req, res) => {
     hasToken: !!TOKEN,
     hasAesKey: !!ENCODING_AES_KEY,
     hasCorpId: !!CORP_ID,
-    features: ['telegram_forward', 'auto_reply', 'homework_sync', 'homework_reminder']
+    features: ['telegram_forward', 'auto_reply', 'homework_sync', 'homework_reminder', 'external_chat_event']
   });
+});
+
+// [废弃] 客户群事件回调端点 - 已合并到 /edu/wecom/callback
+// 保留此端点以兼容旧配置，建议迁移到 /edu/wecom/callback
+app.get('/api/wecom/external-chat', (req, res) => {
+  console.log('⚠️ /api/wecom/external-chat 已废弃，请使用 /edu/wecom/callback');
+  handleCallbackVerify(req, res, 'external-chat(deprecated)');
+});
+
+app.post('/api/wecom/external-chat', (req, res) => {
+  console.log('⚠️ /api/wecom/external-chat 已废弃，请使用 /edu/wecom/callback');
+  handleCallbackMessage(req, res, 'external-chat(deprecated)');
 });
 
 app.get('/', (req, res) => {
   res.json({
     name: '英语培训系统 - 企业微信服务',
     status: 'running',
-    features: ['消息转发到Telegram', '自动回复', '作业同步', '作业提醒'],
+    features: ['消息转发到Telegram', '自动回复', '作业同步', '作业提醒', '客户群事件(统一处理)'],
     endpoints: {
       callback: '/api/wecom/callback',
+      eduCallback: '/edu/wecom/callback (推荐，支持客户群事件)',
+      externalChat: '/api/wecom/external-chat (已废弃)',
       send: '/api/wecom/send',
       health: '/health'
-    }
+    },
+    note: '客户群事件已合并到 /edu/wecom/callback，通过 MsgType=event + Event=change_external_chat 自动识别'
   });
 });
 
@@ -332,17 +420,25 @@ const PORT = process.env.PORT || 3000;
 // 注册作业 CRUD 路由
 registerHomeworkRoutes(app);
 
+// 注册班级管理路由
+registerClassRoutes(app);
+
 app.listen(PORT, () => {
   console.log('==========================================');
-  console.log('  英语培训系统 - 企业微信服务 v5.0');
+  console.log('  英语培训系统 - 企业微信服务 v6.0');
   console.log('==========================================');
   console.log(`🚀 服务启动成功，端口: ${PORT}`);
-  console.log(`📍 回调地址: http://101.32.253.147/api/wecom/callback`);
+  console.log(`📍 应用回调: http://101.32.253.147/api/wecom/callback`);
+  console.log(`📍 统一回调: http://101.32.253.147/edu/wecom/callback (推荐)`);
+  console.log(`📍 客户群回调: http://101.32.253.147/api/wecom/external-chat (已废弃)`);
   console.log(`📱 Telegram 转发: ${TELEGRAM_CHAT_ID || '未配置'}`);
   console.log(`🤖 自动回复: 已启用`);
   console.log(`📚 作业同步: 已启用`);
   console.log(`⏰ 作业提醒: 已启用 (18:00, 20:00)`);
+  console.log(`👥 客户群事件: 已统一到 /edu/wecom/callback`);
   console.log(`🔧 配置状态: ${hasConfig ? '✅ 完整' : '⚠️ 不完整'}`);
+  console.log('==========================================');
+  console.log('📌 客户群事件通过 MsgType=event + Event=change_external_chat 自动识别');
   console.log('==========================================');
   
   initSchedules();
